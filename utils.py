@@ -103,11 +103,11 @@ class SeamImage:
         for i, s in enumerate(self.seam_history[-1]):
             self.idx_map[i, s:] += 1
 
-    def reinit(self):
+    def reinit(self, img_path):
         """
         Re-initiates instance and resets all variables.
         """
-        self.__init__(img_path=self.path)
+        self.__init__(img_path= img_path if img_path else self.path)
 
     @staticmethod
     def load_image(img_path, format="RGB"):
@@ -154,6 +154,7 @@ class SeamImage:
             if self.vis_seams:
                 self.update_ref_mat()
             self.remove_seam(seam)
+        
 
     @NI_decor
     def find_minimal_seam(self) -> List[int]:
@@ -168,43 +169,47 @@ class SeamImage:
 
     @NI_decor
     def remove_seam(self, seam: List[int]):
-        """Removes a seam from self.rgb (you may create a resized version, like self.resized_rgb)
-
-        Guidelines & hints:
-        In order to apply the removal, you might want to extend the seam mask to support 3 channels (rgb) using:
-        3d_mak = np.stack([1d_mask] * 3, axis=2)
-        ...and then use it to create a resized version.
-
-        :arg seam: The seam to remove
         """
-        h, w = self.resized_rgb.shape[:2]
-        new_rgb = np.zeros((h, w - 1, 3), dtype=self.resized_rgb.dtype)
-        new_gs = np.zeros((h, w - 1), dtype=self.resized_gs.dtype)
+        Removes a seam from self.resized_rgb and self.resized_gs.
+        Updates idx_map_h and idx_map_v.
+        If self.vis_seams is True, paints the removed seam in red on seams_rgb (original size).
+        """
+        h = self.resized_rgb.shape[0]
 
-        for row, col in enumerate(seam):
-            new_rgb[row] = np.delete(self.resized_rgb[row], col, axis=0)
-            new_gs[row] = np.delete(self.resized_gs[row], col)
+        # Build boolean mask to remove the seam
+        mask = np.ones((h, self.resized_rgb.shape[1]), dtype=bool)
+        for i in range(h):
+            mask[i, seam[i]] = False
 
-        self.resized_rgb = new_rgb
-        self.resized_gs = new_gs
-        new_w, new_h = self.resized_rgb.shape[:2]
+        # Resize RGB and grayscale images
+        self.resized_rgb = self.resized_rgb[mask].reshape((h, -1, 3))
+        self.resized_gs = self.resized_gs[mask].reshape((h, -1))
 
-        self.idx_map_h, self.idx_map_v = np.meshgrid(range(new_h), range(new_w))
-        self.idx_map = np.stack([self.idx_map_h, self.idx_map_v], axis=2)
+        # Update index maps
+        self.idx_map_h = self.idx_map_h[mask].reshape((h, -1))
+        self.idx_map_v = self.idx_map_v[mask].reshape((h, -1))
 
+        # If enabled, mark the removed seam in red on the original seams_rgb image
         if self.vis_seams:
-            self.paint_seams()
+            for i in range(h):
+                y, x = self.idx_map_v[i, seam[i]], self.idx_map_h[i, seam[i]]
+                self.seams_rgb[y, x] = [1.0, 0.0, 0.0]  # red
+
+        # Update image width
+        self.w -= 1
+
 
     @NI_decor
     def rotate_mats(self, clockwise: bool):
         """
         Rotates the matrices either clockwise or counter-clockwise.
         """
-        # raise NotImplementedError("TODO: Implement SeamImage.rotate_mats")
         mat = (1,0) if clockwise else (0,1)
         self.resized_rgb = np.rot90(self.resized_rgb, k=1, axes=mat)
         self.resized_gs = np.rot90(self.resized_gs, k=1, axes=mat)
         self.h , self.w = self.w, self.h
+
+        self.idx_map_h, self.idx_map_v = np.meshgrid(range(self.w), range(self.h))
 
         if self.vis_seams:
             self.seams_rgb = np.rot90(self.seams_rgb, k=1, axes=mat)
@@ -217,7 +222,6 @@ class SeamImage:
         Parameters:
             num_remove (int): umber of vertical seam to be removed
         """
-        # raise NotImplementedError("TODO: Implement SeamImage.seams_removal_horizontal")
         self.seams_removal(num_remove)
 
     @NI_decor
@@ -227,7 +231,6 @@ class SeamImage:
         Parameters:
             num_remove (int): number of horizontal seam to be removed
         """
-        # raise NotImplementedError("TODO: Implement SeamImage.seams_removal_horizontal")
         self.rotate_mats(True)
         self.seams_removal(num_remove)
         self.rotate_mats(False)
