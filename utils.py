@@ -74,7 +74,7 @@ class SeamImage:
             Use NumpyPy vectorized matrix multiplication for high performance.
             To prevent outlier values in the boundaries, we recommend to pad them with 0.5
         """
-        return np_img @ self.gs_weights.ravel()
+        return (np_img @ self.gs_weights).squeeze()
 
     @NI_decor
     def calc_gradient_magnitude(self):
@@ -89,7 +89,7 @@ class SeamImage:
             - np.gradient or other off-the-shelf tools are NOT allowed, however feel free to compare yourself to them
         """
         padded = np.pad(
-            self.resized_gs.squeeze(),
+            self.resized_gs,
             ((0, 1), (0, 1)),
             mode="constant",
             constant_values=0.5,
@@ -101,7 +101,7 @@ class SeamImage:
 
     def update_ref_mat(self):
         for i, s in enumerate(self.seam_history[-1]):
-            self.idx_map_h[i, s:] -= 1
+            self.idx_map[i, s:] += 1
 
     def reinit(self):
         """
@@ -143,14 +143,16 @@ class SeamImage:
             - removing seams a couple of times (call the function more than once)
             - visualize the original image with removed seams marked in red (for comparison)
         """
+        self.idx_map = np.stack([self.idx_map_h, self.idx_map_v], axis=2)
+
         for _ in tqdm(range(num_remove)):
             self.E = self.calc_gradient_magnitude()
             self.mask = np.ones_like(self.E, dtype=bool)
 
             seam = self.find_minimal_seam()
             self.seam_history.append(seam)
-            # if self.vis_seams:
-            #     self.update_ref_mat()
+            if self.vis_seams:
+                self.update_ref_mat()
             self.remove_seam(seam)
 
     @NI_decor
@@ -175,7 +177,6 @@ class SeamImage:
 
         :arg seam: The seam to remove
         """
-        # raise NotImplementedError("TODO: Implement SeamImage.remove_seam")
         h, w = self.resized_rgb.shape[:2]
         new_rgb = np.zeros((h, w - 1, 3), dtype=self.resized_rgb.dtype)
         new_gs = np.zeros((h, w - 1), dtype=self.resized_gs.dtype)
@@ -186,21 +187,28 @@ class SeamImage:
 
         self.resized_rgb = new_rgb
         self.resized_gs = new_gs
+        new_w, new_h = self.resized_rgb.shape[:2]
 
-        # h, w = self.resized_rgb.shape[:2]
-        # for i, j in enumerate(seam):
-        #     self.mask[i, j] = 0
-        # three_d_mask = np.stack([self.mask] * 3, axis=2)
+        self.idx_map_h, self.idx_map_v = np.meshgrid(range(new_h), range(new_w))
+        self.idx_map = np.stack([self.idx_map_h, self.idx_map_v], axis=2)
 
-        # self.resized_rgb = self.resized_rgb[three_d_mask].reshape((h, w - 1, 3))
-        # self.resized_gs = self.resized_gs[self.mask].reshape((h, w - 1))
+        if self.vis_seams:
+            self.paint_seams()
 
     @NI_decor
     def rotate_mats(self, clockwise: bool):
         """
         Rotates the matrices either clockwise or counter-clockwise.
         """
-        raise NotImplementedError("TODO: Implement SeamImage.rotate_mats")
+        # raise NotImplementedError("TODO: Implement SeamImage.rotate_mats")
+        mat = (1,0) if clockwise else (0,1)
+        self.resized_rgb = np.rot90(self.resized_rgb, k=1, axes=mat)
+        self.resized_gs = np.rot90(self.resized_gs, k=1, axes=mat)
+        self.h , self.w = self.w, self.h
+
+        if self.vis_seams:
+            self.seams_rgb = np.rot90(self.seams_rgb, k=1, axes=mat)
+            self.cumm_mask = np.rot90(self.cumm_mask, k=1, axes=mat)
 
     @NI_decor
     def seams_removal_vertical(self, num_remove: int):
@@ -219,7 +227,10 @@ class SeamImage:
         Parameters:
             num_remove (int): number of horizontal seam to be removed
         """
-        raise NotImplementedError("TODO: Implement SeamImage.seams_removal_horizontal")
+        # raise NotImplementedError("TODO: Implement SeamImage.seams_removal_horizontal")
+        self.rotate_mats(True)
+        self.seams_removal(num_remove)
+        self.rotate_mats(False)
 
     """
     BONUS SECTION
