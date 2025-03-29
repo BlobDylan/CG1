@@ -62,6 +62,9 @@ class SeamImage:
         # This might serve you to keep tracking original pixel indices
         self.idx_map_h, self.idx_map_v = np.meshgrid(range(self.w), range(self.h))
 
+        # TODO: fix
+        self.tracking_map = np.tile(np.arange(self.w), (self.h, 1))  # tracks original column indices
+
     @NI_decor
     def rgb_to_grayscale(self, np_img):
         """Converts a np RGB image into grayscale (using self.gs_weights).
@@ -100,8 +103,9 @@ class SeamImage:
         )
 
     def update_ref_mat(self):
+        self.idx_map = np.stack([self.idx_map_h, self.idx_map_v], axis=2)
         for i, s in enumerate(self.seam_history[-1]):
-            self.idx_map_h[i, s:] -= 1
+            self.idx_map[i, s:] += 1
 
     def reinit(self):
         """
@@ -149,8 +153,8 @@ class SeamImage:
 
             seam = self.find_minimal_seam()
             self.seam_history.append(seam)
-            # if self.vis_seams:
-            #     self.update_ref_mat()
+            if self.vis_seams:
+                self.update_ref_mat()
             self.remove_seam(seam)
 
     @NI_decor
@@ -186,6 +190,15 @@ class SeamImage:
 
         self.resized_rgb = new_rgb
         self.resized_gs = new_gs
+        new_h, new_w = self.resized_rgb.shape[:2]
+
+        self.idx_map_h, self.idx_map_v = np.meshgrid(range(new_w), range(new_h))
+        self.idx_map = np.stack([self.idx_map_h, self.idx_map_v], axis=2)
+
+        if self.vis_seams:
+            # if self.cumm_mask.ndim == 3 and self.cumm_mask.shape[2] == 1:
+            #     self.cumm_mask = self.cumm_mask.squeeze(axis=2)
+            self.paint_seams()
 
         # h, w = self.resized_rgb.shape[:2]
         # for i, j in enumerate(seam):
@@ -200,7 +213,15 @@ class SeamImage:
         """
         Rotates the matrices either clockwise or counter-clockwise.
         """
-        raise NotImplementedError("TODO: Implement SeamImage.rotate_mats")
+        # raise NotImplementedError("TODO: Implement SeamImage.rotate_mats")
+        mat = (1,0) if clockwise else (0,1)
+        self.resized_rgb = np.rot90(self.resized_rgb, k=1, axes=mat)
+        self.resized_gs = np.rot90(self.resized_gs, k=1, axes=mat)
+        self.h , self.w = self.w, self.h
+
+        if self.vis_seams:
+            self.seams_rgb = np.rot90(self.seams_rgb, k=1, axes=mat)
+            self.cumm_mask = np.rot90(self.cumm_mask, k=1, axes=mat)
 
     @NI_decor
     def seams_removal_vertical(self, num_remove: int):
@@ -219,7 +240,10 @@ class SeamImage:
         Parameters:
             num_remove (int): number of horizontal seam to be removed
         """
-        raise NotImplementedError("TODO: Implement SeamImage.seams_removal_horizontal")
+        # raise NotImplementedError("TODO: Implement SeamImage.seams_removal_horizontal")
+        self.rotate_mats(True)
+        self.seams_removal(num_remove)
+        self.rotate_mats(False)
 
     """
     BONUS SECTION
