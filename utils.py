@@ -62,9 +62,6 @@ class SeamImage:
         # This might serve you to keep tracking original pixel indices
         self.idx_map_h, self.idx_map_v = np.meshgrid(range(self.w), range(self.h))
 
-        # TODO: fix
-        self.tracking_map = np.tile(np.arange(self.w), (self.h, 1))  # tracks original column indices
-
     @NI_decor
     def rgb_to_grayscale(self, np_img):
         """Converts a np RGB image into grayscale (using self.gs_weights).
@@ -77,7 +74,7 @@ class SeamImage:
             Use NumpyPy vectorized matrix multiplication for high performance.
             To prevent outlier values in the boundaries, we recommend to pad them with 0.5
         """
-        return np_img @ self.gs_weights.ravel()
+        return (np_img @ self.gs_weights).squeeze()
 
     @NI_decor
     def calc_gradient_magnitude(self):
@@ -92,7 +89,7 @@ class SeamImage:
             - np.gradient or other off-the-shelf tools are NOT allowed, however feel free to compare yourself to them
         """
         padded = np.pad(
-            self.resized_gs.squeeze(),
+            self.resized_gs,
             ((0, 1), (0, 1)),
             mode="constant",
             constant_values=0.5,
@@ -103,7 +100,6 @@ class SeamImage:
         )
 
     def update_ref_mat(self):
-        self.idx_map = np.stack([self.idx_map_h, self.idx_map_v], axis=2)
         for i, s in enumerate(self.seam_history[-1]):
             self.idx_map[i, s:] += 1
 
@@ -147,6 +143,8 @@ class SeamImage:
             - removing seams a couple of times (call the function more than once)
             - visualize the original image with removed seams marked in red (for comparison)
         """
+        self.idx_map = np.stack([self.idx_map_h, self.idx_map_v], axis=2)
+
         for _ in tqdm(range(num_remove)):
             self.E = self.calc_gradient_magnitude()
             self.mask = np.ones_like(self.E, dtype=bool)
@@ -179,7 +177,6 @@ class SeamImage:
 
         :arg seam: The seam to remove
         """
-        # raise NotImplementedError("TODO: Implement SeamImage.remove_seam")
         h, w = self.resized_rgb.shape[:2]
         new_rgb = np.zeros((h, w - 1, 3), dtype=self.resized_rgb.dtype)
         new_gs = np.zeros((h, w - 1), dtype=self.resized_gs.dtype)
@@ -190,23 +187,13 @@ class SeamImage:
 
         self.resized_rgb = new_rgb
         self.resized_gs = new_gs
-        new_h, new_w = self.resized_rgb.shape[:2]
+        new_w, new_h = self.resized_rgb.shape[:2]
 
-        self.idx_map_h, self.idx_map_v = np.meshgrid(range(new_w), range(new_h))
+        self.idx_map_h, self.idx_map_v = np.meshgrid(range(new_h), range(new_w))
         self.idx_map = np.stack([self.idx_map_h, self.idx_map_v], axis=2)
 
         if self.vis_seams:
-            # if self.cumm_mask.ndim == 3 and self.cumm_mask.shape[2] == 1:
-            #     self.cumm_mask = self.cumm_mask.squeeze(axis=2)
             self.paint_seams()
-
-        # h, w = self.resized_rgb.shape[:2]
-        # for i, j in enumerate(seam):
-        #     self.mask[i, j] = 0
-        # three_d_mask = np.stack([self.mask] * 3, axis=2)
-
-        # self.resized_rgb = self.resized_rgb[three_d_mask].reshape((h, w - 1, 3))
-        # self.resized_gs = self.resized_gs[self.mask].reshape((h, w - 1))
 
     @NI_decor
     def rotate_mats(self, clockwise: bool):
