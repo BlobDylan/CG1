@@ -4,7 +4,7 @@ from numba import jit
 from tqdm import tqdm
 from abc import abstractmethod, abstractstaticmethod
 from os.path import basename
-from typing import List
+from typing import List, Tuple
 import functools
 
 
@@ -61,6 +61,7 @@ class SeamImage:
 
         # This might serve you to keep tracking original pixel indices
         self.idx_map_h, self.idx_map_v = np.meshgrid(range(self.w), range(self.h))
+        self.idx_map = np.stack([self.idx_map_h, self.idx_map_v], axis=2)
 
     @NI_decor
     def rgb_to_grayscale(self, np_img):
@@ -116,11 +117,9 @@ class SeamImage:
         )
 
     def paint_seams(self):
-        for s in self.seam_history:
-            for i, s_i in enumerate(s):
-                self.cumm_mask[self.idx_map_v[i, s_i], self.idx_map_h[i, s_i]] = False
-        cumm_mask_rgb = np.stack([self.cumm_mask] * 3, axis=2)
-        self.seams_rgb = np.where(cumm_mask_rgb, self.seams_rgb, [1, 0, 0])
+        self.cumm_mask = np.zeros_like(self.rgb, dtype=bool)
+        self.cumm_mask[self.idx_map[:self.h, :self.w, 1], self.idx_map[:self.h, :self.w,0]] = True
+        self.seams_rgb = np.where(self.cumm_mask, self.rgb, [1,0,0])
 
     def seams_removal(self, num_remove: int):
         """Iterates num_remove times and removes num_remove vertical seams
@@ -143,7 +142,6 @@ class SeamImage:
             - removing seams a couple of times (call the function more than once)
             - visualize the original image with removed seams marked in red (for comparison)
         """
-        self.idx_map = np.stack([self.idx_map_h, self.idx_map_v], axis=2)
 
         for _ in tqdm(range(num_remove)):
             self.E = self.calc_gradient_magnitude()
@@ -151,9 +149,11 @@ class SeamImage:
 
             seam = self.find_minimal_seam()
             self.seam_history.append(seam)
-            if self.vis_seams:
-                self.update_ref_mat()
+            # if self.vis_seams:
+            #     self.update_ref_mat()
             self.remove_seam(seam)
+        
+        self.paint_seams()
         
 
     @NI_decor
@@ -185,15 +185,12 @@ class SeamImage:
         self.resized_rgb = self.resized_rgb[mask].reshape((h, -1, 3))
         self.resized_gs = self.resized_gs[mask].reshape((h, -1))
 
-        # Update index maps
-        self.idx_map_h = self.idx_map_h[mask].reshape((h, -1))
-        self.idx_map_v = self.idx_map_v[mask].reshape((h, -1))
-
         # If enabled, mark the removed seam in red on the original seams_rgb image
         if self.vis_seams:
-            for i in range(h):
-                y, x = self.idx_map_v[i, seam[i]], self.idx_map_h[i, seam[i]]
-                self.seams_rgb[y, x] = [1.0, 0.0, 0.0]  # red
+            # for i in range(h):
+            #     y, x = self.idx_map_v[i, seam[i]], self.idx_map_h[i, seam[i]]
+            #     self.seams_rgb[y, x] = [1.0, 0.0, 0.0]  # red
+            self.idx_map = self.idx_map[mask].reshape((h, -1, 2))
 
         # Update image width
         self.w -= 1
@@ -205,15 +202,12 @@ class SeamImage:
         Rotates the matrices either clockwise or counter-clockwise.
         """
         mat = (1,0) if clockwise else (0,1)
-        self.resized_rgb = np.rot90(self.resized_rgb, k=1, axes=mat)
         self.resized_gs = np.rot90(self.resized_gs, k=1, axes=mat)
+        self.resized_rgb = np.rot90(self.resized_rgb, k=1, axes=mat)
         self.h , self.w = self.w, self.h
 
-        self.idx_map_h, self.idx_map_v = np.meshgrid(range(self.w), range(self.h))
-
         if self.vis_seams:
-            self.seams_rgb = np.rot90(self.seams_rgb, k=1, axes=mat)
-            self.cumm_mask = np.rot90(self.cumm_mask, k=1, axes=mat)
+            self.idx_map = np.rot90(self.idx_map, k=1, axes=mat)
 
     @NI_decor
     def seams_removal_vertical(self, num_remove: int):
@@ -316,7 +310,8 @@ class DPSeamImage(SeamImage):
         """DPSeamImage initialization."""
         super().__init__(*args, **kwargs)
         try:
-            self.M = self.calc_M()
+            self.init_mats()
+
         except NotImplementedError as e:
             print(e)
 
@@ -336,7 +331,32 @@ class DPSeamImage(SeamImage):
             ii) fill in the backtrack matrix corresponding to M
             iii) seam backtracking: calculates the actual indices of the seam
         """
-        raise NotImplementedError("TODO: implement DPSeamImage.find_minimal_seam")
+        self.init_mats()
+        return self.backtrack()
+        
+    #TODO
+    def backtrack(self) -> List[int]:
+        min_idx = np.argmin(self.M[-1, :])
+        seam = [min_idx]
+        for i in range(self.h - 2, -1, -1):
+            L_V_or_R = self.backtrack_mat[i+1, min_idx]
+            min_idx += L_V_or_R
+            min_idx = max(0, min(min_idx, self.w - 2))
+
+            seam.append(min_idx)
+            
+        seam.reverse()
+        return seam
+    
+    def calc_C(self):
+        j_plus = np.roll(self.resized_gs, shift=-1, axis=0)
+        j_minus = np.roll(self.resized_gs, shift=1, axis=0)
+        i_minus = np.roll(self.resized_gs, shift=1, axis=1)
+
+        self.C_V = np.abs(j_plus - j_minus)
+        self.C_L = np.abs(j_plus - j_minus) + np.abs(j_minus - i_minus)
+        self.C_R = np.abs(j_plus - j_minus) + np.abs(j_plus - i_minus)
+        
 
     @NI_decor
     def calc_M(self):
@@ -349,11 +369,31 @@ class DPSeamImage(SeamImage):
             As taught, the energy is calculated from top to bottom.
             You might find the function 'np.roll' useful.
         """
-        raise NotImplementedError("TODO: Implement DPSeamImage.calc_M")
+        h, w = self.E.shape
+        M = self.E.copy()
+        for i in range(1,h):
+            j = M[i-1]
+            j_plus = np.roll(j, shift=-1, axis=0)
+            j_minus = np.roll(j, shift=1, axis=0)
+
+            j += self.C_V[i-1]
+            j_minus += self.C_L[i-1]
+            j_plus += self.C_R[i-1]
+
+            stacked = np.stack([j_minus, j, j_plus], axis=1)
+            directions = np.argmin(stacked, axis=1)
+            self.backtrack_mat[i, :] = directions.squeeze()
+            min_values = np.min(stacked, axis=1)
+            M[i, :] = M[i, :] + min_values.squeeze()
+        
+        # Changing the range of indexes to -1, 0, 1 (L,V,R)
+        self.backtrack_mat -= 1
+        return M
 
     def init_mats(self):
+        self.backtrack_mat = np.zeros_like(self.E, dtype=int)
+        self.calc_C()
         self.M = self.calc_M()
-        self.backtrack_mat = np.zeros_like(self.M, dtype=int)
 
     @staticmethod
     @jit(nopython=True)
