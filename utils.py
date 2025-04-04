@@ -113,7 +113,7 @@ class SeamImage:
         self.C_L = np.abs(j_plus - j_minus) + np.abs(j_minus - i_minus)
         self.C_R = np.abs(j_plus - j_minus) + np.abs(j_plus - i_minus)
 
-    def reinit(self, img_path):
+    def reinit(self, img_path=None):
         """
         Re-initiates instance and resets all variables.
         """
@@ -434,7 +434,10 @@ def scale_to_shape(orig_shape: np.ndarray, scale_factors: list):
     Returns
         the new shape
     """
-    raise NotImplementedError("TODO: Implement scale_to_shape")
+    return (
+        int(orig_shape[0] * scale_factors[0]),
+        int(orig_shape[1] * scale_factors[1]),
+    )
 
 
 def resize_seam_carving(seam_img: SeamImage, shapes: np.ndarray):
@@ -447,7 +450,14 @@ def resize_seam_carving(seam_img: SeamImage, shapes: np.ndarray):
     Returns
         the resized rgb image
     """
-    raise NotImplementedError("TODO: Implement resize_seam_carving")
+    seam_img.reinit()
+    height_diff = shapes[0][0] - shapes[1][0]
+    width_diff = shapes[0][1] - shapes[1][1]
+    print(f"height: {height_diff}, width: {width_diff}")
+    seam_img.seams_removal_vertical(width_diff)
+    seam_img.seams_removal_horizontal(height_diff)
+
+    return seam_img.resized_rgb
 
 
 def bilinear(image, new_shape):
