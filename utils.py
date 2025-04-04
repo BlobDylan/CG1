@@ -104,11 +104,20 @@ class SeamImage:
         for i, s in enumerate(self.seam_history[-1]):
             self.idx_map[i, s:] += 1
 
+    def calc_C(self):
+        j_plus = np.roll(self.resized_gs, shift=-1, axis=0)
+        j_minus = np.roll(self.resized_gs, shift=1, axis=0)
+        i_minus = np.roll(self.resized_gs, shift=1, axis=1)
+
+        self.C_V = np.abs(j_plus - j_minus)
+        self.C_L = np.abs(j_plus - j_minus) + np.abs(j_minus - i_minus)
+        self.C_R = np.abs(j_plus - j_minus) + np.abs(j_plus - i_minus)
+
     def reinit(self, img_path):
         """
         Re-initiates instance and resets all variables.
         """
-        self.__init__(img_path= img_path if img_path else self.path)
+        self.__init__(img_path=img_path if img_path else self.path)
 
     @staticmethod
     def load_image(img_path, format="RGB"):
@@ -118,8 +127,10 @@ class SeamImage:
 
     def paint_seams(self):
         self.cumm_mask = np.zeros_like(self.rgb, dtype=bool)
-        self.cumm_mask[self.idx_map[:self.h, :self.w, 1], self.idx_map[:self.h, :self.w,0]] = True
-        self.seams_rgb = np.where(self.cumm_mask, self.rgb, [1,0,0])
+        self.cumm_mask[
+            self.idx_map[: self.h, : self.w, 1], self.idx_map[: self.h, : self.w, 0]
+        ] = True
+        self.seams_rgb = np.where(self.cumm_mask, self.rgb, [1, 0, 0])
 
     def seams_removal(self, num_remove: int):
         """Iterates num_remove times and removes num_remove vertical seams
@@ -149,12 +160,10 @@ class SeamImage:
 
             seam = self.find_minimal_seam()
             self.seam_history.append(seam)
-            # if self.vis_seams:
-            #     self.update_ref_mat()
             self.remove_seam(seam)
-        
-        self.paint_seams()
-        
+
+        if self.vis_seams:
+            self.paint_seams()
 
     @NI_decor
     def find_minimal_seam(self) -> List[int]:
@@ -176,7 +185,7 @@ class SeamImage:
         """
         h = self.resized_rgb.shape[0]
 
-        # Build boolean mask to remove the seam
+        # Boolean mask to remove the seam
         mask = np.ones((h, self.resized_rgb.shape[1]), dtype=bool)
         for i in range(h):
             mask[i, seam[i]] = False
@@ -185,26 +194,21 @@ class SeamImage:
         self.resized_rgb = self.resized_rgb[mask].reshape((h, -1, 3))
         self.resized_gs = self.resized_gs[mask].reshape((h, -1))
 
-        # If enabled, mark the removed seam in red on the original seams_rgb image
         if self.vis_seams:
-            # for i in range(h):
-            #     y, x = self.idx_map_v[i, seam[i]], self.idx_map_h[i, seam[i]]
-            #     self.seams_rgb[y, x] = [1.0, 0.0, 0.0]  # red
             self.idx_map = self.idx_map[mask].reshape((h, -1, 2))
 
         # Update image width
         self.w -= 1
-
 
     @NI_decor
     def rotate_mats(self, clockwise: bool):
         """
         Rotates the matrices either clockwise or counter-clockwise.
         """
-        mat = (1,0) if clockwise else (0,1)
+        mat = (1, 0) if clockwise else (0, 1)
         self.resized_gs = np.rot90(self.resized_gs, k=1, axes=mat)
         self.resized_rgb = np.rot90(self.resized_rgb, k=1, axes=mat)
-        self.h , self.w = self.w, self.h
+        self.h, self.w = self.w, self.h
 
         if self.vis_seams:
             self.idx_map = np.rot90(self.idx_map, k=1, axes=mat)
@@ -282,22 +286,40 @@ class GreedySeamImage(SeamImage):
     @NI_decor
     def find_minimal_seam(self) -> List[int]:
         """
-        Finds the minimal seam by using a greedy algorithm.
-
-        Guidelines & hints:
-        The first pixel of the seam should be the pixel with the lowest cost.
-        Every row chooses the next pixel based on which neighbor has the lowest cost.
+        Finds the minimal seam by using a greedy algorithm with cumulative cost matrices C_L, C_V, C_R.
+        The first pixel of the seam is the one with the lowest energy in the first row.
+        Then, for each next row, we choose the minimum cost among valid neighbors using the cost maps.
         """
-        # raise NotImplementedError("TODO: Implement GreedySeamImage.find_minimal_seam")
         h, w = self.E.shape
+        self.calc_C()
         seam = np.zeros(h, dtype=int)
+
         min_idx = np.argmin(self.E[0])
+
         for i in range(h):
             seam[i] = min_idx
-            left_idx = max(min_idx - 1, 0)
-            right_idx = min(min_idx + 1, w - 1)
+
             if i + 1 < h:
-                min_idx = np.argmin(self.E[i + 1][left_idx : right_idx + 1]) + left_idx
+                candidates = []
+
+                # Check left neighbor
+                if min_idx > 0:
+                    candidates.append(
+                        self.E[i + 1][min_idx - 1] + self.C_L[i + 1][min_idx - 1]
+                    )
+
+                # Center neighbor
+                candidates.append(self.E[i + 1][min_idx] + self.C_V[i + 1][min_idx])
+
+                # Right neighbor
+                if min_idx < w - 1:
+                    candidates.append(
+                        self.E[i + 1][min_idx + 1] + self.C_R[i + 1][min_idx + 1]
+                    )
+
+                direction = np.argmin(candidates)
+                min_idx = min_idx + direction - 1
+
         return seam.tolist()
 
 
@@ -332,62 +354,51 @@ class DPSeamImage(SeamImage):
             iii) seam backtracking: calculates the actual indices of the seam
         """
         self.init_mats()
-        return self.backtrack()
-        
-    #TODO
-    def backtrack(self) -> List[int]:
+
+        # Backtracking
         min_idx = np.argmin(self.M[-1, :])
         seam = [min_idx]
         for i in range(self.h - 2, -1, -1):
-            L_V_or_R = self.backtrack_mat[i+1, min_idx]
+            L_V_or_R = self.backtrack_mat[i + 1, min_idx]
             min_idx += L_V_or_R
             min_idx = max(0, min(min_idx, self.w - 2))
 
             seam.append(min_idx)
-            
+
         seam.reverse()
         return seam
-    
-    def calc_C(self):
-        j_plus = np.roll(self.resized_gs, shift=-1, axis=0)
-        j_minus = np.roll(self.resized_gs, shift=1, axis=0)
-        i_minus = np.roll(self.resized_gs, shift=1, axis=1)
-
-        self.C_V = np.abs(j_plus - j_minus)
-        self.C_L = np.abs(j_plus - j_minus) + np.abs(j_minus - i_minus)
-        self.C_R = np.abs(j_plus - j_minus) + np.abs(j_plus - i_minus)
-        
 
     @NI_decor
     def calc_M(self):
-        """Calculates the matrix M discussed in lecture (with forward-looking cost)
-
-        Returns:
-            An energy matrix M (float32) of shape (h, w)
-
-        Guidelines & hints:
-            As taught, the energy is calculated from top to bottom.
-            You might find the function 'np.roll' useful.
-        """
         h, w = self.E.shape
         M = self.E.copy()
-        for i in range(1,h):
-            j = M[i-1]
-            j_plus = np.roll(j, shift=-1, axis=0)
-            j_minus = np.roll(j, shift=1, axis=0)
+        self.backtrack_mat = np.zeros((h, w), dtype=np.int32)
 
-            j += self.C_V[i-1]
-            j_minus += self.C_L[i-1]
-            j_plus += self.C_R[i-1]
+        for i in range(1, h):
+            m_prev = M[i - 1]
+            CL = self.C_L[i - 1]
+            CV = self.C_V[i - 1]
+            CR = self.C_R[i - 1]
 
-            stacked = np.stack([j_minus, j, j_plus], axis=1)
-            directions = np.argmin(stacked, axis=1)
-            self.backtrack_mat[i, :] = directions.squeeze()
-            min_values = np.min(stacked, axis=1)
-            M[i, :] = M[i, :] + min_values.squeeze()
-        
-        # Changing the range of indexes to -1, 0, 1 (L,V,R)
-        self.backtrack_mat -= 1
+            cost_matrix = np.full((3, w), float("inf"))
+
+            # Diagonal left
+            cost_matrix[0, 1:] = m_prev[:-1] + CL[1:]
+
+            # Vertical
+            cost_matrix[1, :] = m_prev + CV
+
+            # Diagonal right
+            cost_matrix[2, :-1] = m_prev[1:] + CR[:-1]
+
+            min_indices = np.argmin(cost_matrix, axis=0)
+            min_values = cost_matrix[min_indices, np.arange(w)]
+
+            direction_map = np.array([-1, 0, 1])
+            self.backtrack_mat[i] = direction_map[min_indices]
+
+            M[i] += min_values
+
         return M
 
     def init_mats(self):
